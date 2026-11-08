@@ -1,12 +1,8 @@
 import { NextResponse } from "next/server";
 
 /**
- * POST /api/guests/import
- * Menerima file (CSV/VCF/TXT) dan mengembalikan daftar nama yang
- * berhasil di-parse. Parsing server-side, ringan tanpa library berat.
- *
- * Untuk file Excel (.xlsx), user dapat menyimpan sebagai CSV terlebih
- * dahulu di Excel/Google Sheets, lalu import CSV-nya.
+ * POST /api/guests/import — parse file CSV/VCF/TXT, return daftar nama.
+ * Server-side parsing (ringan, tanpa library berat).
  */
 export async function POST(request: Request) {
   try {
@@ -51,10 +47,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ ok: true, names });
   } catch (error) {
-    console.error("Import parse error:", error);
-    return NextResponse.json(
-      { ok: false, error: "Gagal memproses file." },
-      { status: 500 }
-    );
+    const msg = error instanceof Error ? error.message : String(error);
+    return NextResponse.json({ ok: false, error: msg }, { status: 500 });
   }
 }

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { getClient, ensureTables } from "@/lib/migrate";
 
-/** PUT /api/guests/[id] — edit nama tamu (code di-regenerate dari nama baru) */
+/** PUT /api/guests/[id] — edit nama tamu (code auto-regenerate dari nama baru). */
 export async function PUT(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
@@ -23,41 +23,46 @@ export async function PUT(
     const num = Math.floor(1000 + Math.random() * 9000);
     let code = `${num}-${sanitized}`;
 
-    // Pastikan unik (kecuali untuk item ini sendiri)
+    const client = getClient();
+    await ensureTables(client);
+
+    // Pastikan code unik (kecuali untuk item ini sendiri)
     for (let i = 0; i < 10; i++) {
-      const exists = await db.guest.findFirst({
-        where: { code, NOT: { id } },
+      const existing = await client.execute({
+        sql: "SELECT 1 FROM Guest WHERE code = ? AND id != ?",
+        args: [code, id],
       });
-      if (!exists) break;
+      if (existing.rows.length === 0) break;
       const n2 = Math.floor(1000 + Math.random() * 9000);
       code = `${n2}-${sanitized}`;
     }
 
-    await db.guest.update({ where: { id }, data: { name, code } });
+    await client.execute({
+      sql: "UPDATE Guest SET name = ?, code = ? WHERE id = ?",
+      args: [name, code, id],
+    });
+    await client.close();
     return NextResponse.json({ ok: true });
   } catch (error) {
-    console.error("Guest update error:", error);
-    return NextResponse.json(
-      { ok: false, error: "Gagal mengedit tamu." },
-      { status: 500 }
-    );
+    const msg = error instanceof Error ? error.message : String(error);
+    return NextResponse.json({ ok: false, error: msg }, { status: 500 });
   }
 }
 
-/** DELETE /api/guests/[id] — hapus satu tamu */
+/** DELETE /api/guests/[id] — hapus satu tamu. */
 export async function DELETE(
   _request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const { id } = await params;
-    await db.guest.delete({ where: { id } });
+    const client = getClient();
+    await ensureTables(client);
+    await client.execute({ sql: "DELETE FROM Guest WHERE id = ?", args: [id] });
+    await client.close();
     return NextResponse.json({ ok: true });
   } catch (error) {
-    console.error("Guest delete error:", error);
-    return NextResponse.json(
-      { ok: false, error: "Gagal menghapus tamu." },
-      { status: 500 }
-    );
+    const msg = error instanceof Error ? error.message : String(error);
+    return NextResponse.json({ ok: false, error: msg }, { status: 500 });
   }
 }

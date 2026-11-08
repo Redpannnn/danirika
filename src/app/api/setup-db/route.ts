@@ -2,39 +2,71 @@ import { NextResponse } from "next/server";
 import { createClient } from "@libsql/client";
 
 /**
- * GET /api/setup-db — bikin tabel Guest & RSVP di database Turso otomatis.
+ * GET /api/setup-db — auto-create tabel RSVP & Guest di Turso/SQLite.
  *
- * Cara pakai: cukup buka link ini di browser SEKALI setelah deploy:
- *   https://nama-domain-vercel.vercel.app/api/setup-db
+ * SELF-CONTAINED: bikin koneksi sendiri pakai @libsql/client (NGGAK pakai
+ * Prisma). Jadi walau Prisma ada masalah, endpoint ini tetap jalan.
  *
- * Tidak perlu install apapun di PC. Tabel akan dibuat dengan
- * "CREATE TABLE IF NOT EXISTS" jadi aman dijalankan berkali-kali.
+ * Buat tabel + index pakai raw SQL. Aman dipanggil berkali-kali.
  */
 export async function GET() {
-  const dbUrl = process.env.DATABASE_URL || "";
-  const authToken = process.env.TURSO_AUTH_TOKEN;
+  const results: string[] = [];
+  const url = process.env.DATABASE_URL;
+  // Support DATABASE_AUTH_TOKEN dan TURSO_AUTH_TOKEN (alias)
+  const token =
+    process.env.DATABASE_AUTH_TOKEN || process.env.TURSO_AUTH_TOKEN;
 
-  // Validasi: pastikan env vars sudah di-set di Vercel
-  if (!dbUrl || (!dbUrl.startsWith("libsql:") && !dbUrl.startsWith("http"))) {
+  // Validate env
+  if (!url || url === "undefined" || url === "null") {
     return NextResponse.json(
       {
         ok: false,
-        error:
-          "DATABASE_URL belum di-set di Vercel atau bukan format Turso (libsql://...). Set di Vercel Dashboard → Settings → Environment Variables, lalu redeploy.",
+        error: `DATABASE_URL tidak valid: "${url}". Set DATABASE_URL=libsql://... di env var.`,
+        details: results,
+        hint: "Buka /api/debug-db untuk lihat status env vars.",
+      },
+      { status: 500 }
+    );
+  }
+  if (
+    !url.startsWith("libsql:") &&
+    !url.startsWith("http:") &&
+    !url.startsWith("https:") &&
+    !url.startsWith("file:")
+  ) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: `DATABASE_URL format nggak didukung: "${url.slice(0, 30)}...". Harus libsql:// atau http(s)://`,
+        details: results,
+      },
+      { status: 500 }
+    );
+  }
+
+  let client;
+  try {
+    client = createClient({ url, authToken: token });
+  } catch (err) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: `Gagal bikin libsql client: ${err instanceof Error ? err.message : String(err)}`,
+        details: results,
       },
       { status: 500 }
     );
   }
 
   try {
-    const client = createClient({ url: dbUrl, authToken: authToken || undefined });
+    // Test connection
+    await client.execute("SELECT 1");
+    results.push("✓ Koneksi database berhasil");
 
-    const results: string[] = [];
-
-    // 1. Tabel RSVP
+    // Create RSVP table
     await client.execute(`
       CREATE TABLE IF NOT EXISTS "RSVP" (
-        "id" TEXT PRIMARY KEY NOT NULL,
+        "id" TEXT NOT NULL PRIMARY KEY,
         "name" TEXT NOT NULL,
         "attendance" TEXT NOT NULL,
         "guests" INTEGER NOT NULL DEFAULT 1,
@@ -42,52 +74,55 @@ export async function GET() {
         "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
       )
     `);
-    results.push("✅ Tabel RSVP dibuat");
+    results.push("✓ Tabel RSVP siap");
 
-    // 2. Tabel Guest
+    // Create Guest table
     await client.execute(`
       CREATE TABLE IF NOT EXISTS "Guest" (
-        "id" TEXT PRIMARY KEY NOT NULL,
-        "code" TEXT NOT NULL UNIQUE,
+        "id" TEXT NOT NULL PRIMARY KEY,
+        "code" TEXT NOT NULL,
         "name" TEXT NOT NULL,
         "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
       )
     `);
-    results.push("✅ Tabel Guest dibuat");
+    results.push("✓ Tabel Guest siap");
 
-    // 3. Hapus tabel contoh bawaan Prisma (User, Post) — opsional
+    // Create unique index on Guest.code
     try {
-      await client.execute(`DROP TABLE IF EXISTS "_prisma_migrations"`);
-      results.push("ℹ️ Cache migration lama dibersihkan");
+      await client.execute(
+        `CREATE UNIQUE INDEX IF NOT EXISTS "Guest_code_key" ON "Guest"("code")`
+      );
+      results.push("✓ Index Guest.code siap");
     } catch {
-      // abaikan
+      // index mungkin udah ada
     }
-
-    // 4. Cek tabel yang ada
-    const tables = await client.execute(
-      `SELECT name FROM sqlite_master WHERE type='table' ORDER BY name`
-    );
-    const tableNames = tables.rows.map((r) => r.name).filter(Boolean);
 
     return NextResponse.json({
       ok: true,
-      message: "Setup database berhasil! Tabel sudah siap.",
-      actions: results,
-      tables: tableNames,
-      nextStep:
-        "Sekarang test: buka /manage → tambah tamu, dan isi form RSVP di undangan.",
+      message: "Setup selesai! Tabel RSVP & Guest siap dipakai.",
+      dbUrl: url.replace(/:\/\/[^@]*/, "://***"),
+      details: results,
+      nextStep: "Sekarang test: buka /manage → tambah tamu, dan isi form RSVP di undangan.",
     });
-  } catch (error) {
-    console.error("Setup DB error:", error);
-    const msg = error instanceof Error ? error.message : String(error);
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
     return NextResponse.json(
       {
         ok: false,
-        error: msg,
-        hint:
-          "Pastikan DATABASE_URL dan TURSO_AUTH_TOKEN sudah benar di Vercel Environment Variables.",
+        error: errMsg,
+        dbUrl: url.replace(/:\/\/[^@]*/, "://***"),
+        details: results,
+        hint: "Cek apakah Turso DB URL & token bener. Buka /api/debug-db buat lihat env vars.",
       },
       { status: 500 }
     );
+  } finally {
+    if (client) {
+      try {
+        await client.close();
+      } catch {
+        // ignore
+      }
+    }
   }
 }

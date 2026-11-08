@@ -1,29 +1,5 @@
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
-
-/**
- * Membuat kode unik dari nama: "NNNN-NAMASANITIZED"
- * Mis. "Budi Santoso" → "3821-BUDISANTOSO"
- */
-function makeCode(name: string): string {
-  const sanitized = name
-    .toUpperCase()
-    .replace(/[^A-Z0-9]/g, "")
-    .slice(0, 12);
-  const num = Math.floor(1000 + Math.random() * 9000);
-  return `${num}-${sanitized}`;
-}
-
-/** Pastikan kode unik — coba ulang sampai tidak bentrok */
-async function uniqueCode(name: string): Promise<string> {
-  for (let i = 0; i < 10; i++) {
-    const code = makeCode(name);
-    const exists = await db.guest.findUnique({ where: { code } });
-    if (!exists) return code;
-  }
-  // fallback dengan timestamp
-  return `${Date.now().toString(36).toUpperCase()}-${name.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8)}`;
-}
+import { getClient, genId, ensureTables } from "@/lib/migrate";
 
 /**
  * POST /api/guests — tambah satu atau banyak tamu sekaligus.
@@ -34,7 +10,6 @@ export async function POST(request: Request) {
     const body = await request.json();
     const raw = typeof body?.names === "string" ? body.names : "";
 
-    // Parse: satu nama per baris. Format "code|nama" untuk custom code.
     const lines = raw
       .split("\n")
       .map((l) => l.trim())
@@ -47,7 +22,11 @@ export async function POST(request: Request) {
       );
     }
 
-    const created = [];
+    const client = getClient();
+    await ensureTables(client);
+    const takenCodes = new Set<string>();
+    let added = 0;
+
     for (const line of lines) {
       let code: string;
       let name: string;
@@ -58,38 +37,74 @@ export async function POST(request: Request) {
         name = rest.join("|").trim();
       } else {
         name = line;
-        code = await uniqueCode(name);
+        // Auto-generate code dari nama
+        const sanitized = name.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12);
+        const num = Math.floor(1000 + Math.random() * 9000);
+        code = `${num}-${sanitized}`;
       }
 
-      // Skip kalau kode sudah ada
-      const exists = await db.guest.findUnique({ where: { code } });
-      if (exists) continue;
+      // Cek tabrakan di batch & DB
+      let finalCode = code;
+      let attempt = 0;
+      while (takenCodes.has(finalCode)) {
+        attempt++;
+        finalCode = `${code}${attempt}`;
+      }
+      const existing = await client.execute({
+        sql: "SELECT 1 FROM Guest WHERE code = ?",
+        args: [finalCode],
+      });
+      while (existing.rows.length > 0) {
+        attempt++;
+        finalCode = `${code}${attempt}`;
+        const re = await client.execute({
+          sql: "SELECT 1 FROM Guest WHERE code = ?",
+          args: [finalCode],
+        });
+        if (re.rows.length === 0) break;
+      }
+      takenCodes.add(finalCode);
 
-      created.push(
-        await db.guest.create({ data: { code, name } })
-      );
+      const id = genId();
+      await client.execute({
+        sql: "INSERT INTO Guest (id, code, name, createdAt) VALUES (?, ?, ?, ?)",
+        args: [id, finalCode, name, new Date().toISOString()],
+      });
+      added++;
     }
 
-    return NextResponse.json({ ok: true, count: created.length });
+    await client.close();
+    return NextResponse.json({ ok: true, count: added });
   } catch (error) {
-    console.error("Guest create error:", error);
-    const msg =
-      error instanceof Error ? error.message : "Gagal menambah tamu.";
-    return NextResponse.json({ ok: false, error: msg }, { status: 500 });
+    const msg = error instanceof Error ? error.message : String(error);
+    return NextResponse.json(
+      { ok: false, error: msg, hint: "Pastikan DATABASE_URL sudah benar." },
+      { status: 500 }
+    );
   }
 }
 
-/** GET /api/guests — daftar semua tamu */
+/** GET /api/guests — daftar semua tamu (urutan tambah). */
 export async function GET() {
   try {
-    const list = await db.guest.findMany({
-      orderBy: { createdAt: "asc" },
-    });
-    return NextResponse.json({ ok: true, data: list });
+    const client = getClient();
+    await ensureTables(client);
+    const result = await client.execute(
+      "SELECT id, code, name, createdAt FROM Guest ORDER BY createdAt ASC"
+    );
+    await client.close();
+    const rows = result.rows.map((r) => ({
+      id: String(r.id),
+      code: String(r.code),
+      name: String(r.name),
+      createdAt: String(r.createdAt),
+    }));
+    return NextResponse.json({ ok: true, data: rows });
   } catch (error) {
-    console.error("Guest list error:", error);
-    const msg =
-      error instanceof Error ? error.message : "Gagal memuat data.";
-    return NextResponse.json({ ok: false, error: msg }, { status: 500 });
+    const msg = error instanceof Error ? error.message : String(error);
+    return NextResponse.json(
+      { ok: false, error: msg, hint: "Pastikan DATABASE_URL sudah benar." },
+      { status: 500 }
+    );
   }
 }

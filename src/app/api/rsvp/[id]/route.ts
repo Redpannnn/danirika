@@ -1,9 +1,7 @@
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { getClient, ensureTables } from "@/lib/migrate";
 
-/**
- * DELETE /api/rsvp/[id] — hapus satu RSVP berdasarkan id.
- */
+/** DELETE /api/rsvp/[id] — hapus satu RSVP. */
 export async function DELETE(
   _request: Request,
   { params }: { params: Promise<{ id: string }> }
@@ -16,22 +14,18 @@ export async function DELETE(
         { status: 400 }
       );
     }
-
-    await db.rSVP.delete({ where: { id } });
+    const client = getClient();
+    await ensureTables(client);
+    await client.execute({ sql: "DELETE FROM RSVP WHERE id = ?", args: [id] });
+    await client.close();
     return NextResponse.json({ ok: true });
   } catch (error) {
-    console.error("RSVP delete error:", error);
-    return NextResponse.json(
-      { ok: false, error: "Gagal menghapus data." },
-      { status: 500 }
-    );
+    const msg = error instanceof Error ? error.message : String(error);
+    return NextResponse.json({ ok: false, error: msg }, { status: 500 });
   }
 }
 
-/**
- * PUT /api/rsvp/[id] — perbarui satu RSVP berdasarkan id.
- * Body: { name?, attendance?, guests?, message? }
- */
+/** PUT /api/rsvp/[id] — perbarui satu RSVP. */
 export async function PUT(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
@@ -44,33 +38,53 @@ export async function PUT(
         { status: 400 }
       );
     }
-
     const body = await request.json();
-    const data: Record<string, unknown> = {};
-
-    if (typeof body?.name === "string" && body.name.trim()) {
-      data.name = body.name.trim();
-    }
-    if (
+    const name = typeof body?.name === "string" ? body.name.trim() : "";
+    const attendance =
       typeof body?.attendance === "string" &&
       ["hadir", "tidak", "ragu"].includes(body.attendance)
-    ) {
-      data.attendance = body.attendance;
-    }
-    if (typeof body?.guests === "number" && body.guests >= 1) {
-      data.guests = Math.min(body.guests, 10);
-    }
-    if (typeof body?.message === "string") {
-      data.message = body.message.trim().slice(0, 1000) || null;
-    }
+        ? body.attendance
+        : null;
+    const guests =
+      typeof body?.guests === "number" && body.guests >= 1
+        ? Math.min(10, body.guests)
+        : null;
+    const message =
+      typeof body?.message === "string"
+        ? body.message.trim().slice(0, 1000) || null
+        : null;
 
-    await db.rSVP.update({ where: { id }, data });
+    const client = getClient();
+    await ensureTables(client);
+
+    if (name) {
+      await client.execute({
+        sql: "UPDATE RSVP SET name = ? WHERE id = ?",
+        args: [name, id],
+      });
+    }
+    if (attendance) {
+      await client.execute({
+        sql: "UPDATE RSVP SET attendance = ? WHERE id = ?",
+        args: [attendance, id],
+      });
+    }
+    if (guests !== null) {
+      await client.execute({
+        sql: "UPDATE RSVP SET guests = ? WHERE id = ?",
+        args: [guests, id],
+      });
+    }
+    if (message !== undefined) {
+      await client.execute({
+        sql: "UPDATE RSVP SET message = ? WHERE id = ?",
+        args: [message, id],
+      });
+    }
+    await client.close();
     return NextResponse.json({ ok: true });
   } catch (error) {
-    console.error("RSVP update error:", error);
-    return NextResponse.json(
-      { ok: false, error: "Gagal memperbarui data." },
-      { status: 500 }
-    );
+    const msg = error instanceof Error ? error.message : String(error);
+    return NextResponse.json({ ok: false, error: msg }, { status: 500 });
   }
 }
