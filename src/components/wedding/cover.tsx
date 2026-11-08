@@ -1,6 +1,7 @@
 "use client";
 
 import Image from "next/image";
+import { useEffect, useState } from "react";
 
 type CoverProps = {
   /** "cover" = sampul dengan undangan tamu, "opening" = isi setelah buka undangan */
@@ -16,9 +17,36 @@ type CoverProps = {
  * Mode "cover" menampilkan teks undangan tamu + tombol "Buka Undangan",
  * sedangkan mode "opening" menampilkan ayat QS. Ar-Rum: 21 sebagai
  * pembuka isi undangan (muncul setelah tombol ditekan).
+ *
+ * Nama tamu diambil otomatis dari query param `?to=CODE` (code tamu
+ * dari halaman /manage). Jika code cocok, nama tamu ditampilkan.
+ * Jika tidak ada/tdk cocok, fallback "Tamu Undangan".
  */
 export function Cover({ mode = "cover", onOpen }: CoverProps) {
   const isOpening = mode === "opening";
+  const [guestName, setGuestName] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (isOpening) return;
+    // Baca query param ?to=CODE dari URL
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get("to");
+    if (!code) return;
+
+    // Cari nama tamu berdasarkan code
+    fetch("/api/guests", { cache: "no-store" })
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.ok && Array.isArray(data.data)) {
+          const guest = data.data.find(
+            (g: { code: string; name: string }) =>
+              g.code.toUpperCase() === code.toUpperCase()
+          );
+          if (guest) setGuestName(guest.name);
+        }
+      })
+      .catch(() => {});
+  }, [isOpening]);
 
   return (
     <section
@@ -113,7 +141,7 @@ export function Cover({ mode = "cover", onOpen }: CoverProps) {
             Bapak/Ibu/Saudara/i
           </p>
           <p className="mt-1.5 text-lg font-semibold md:text-xl">
-            Tamu Undangan
+            {guestName || "Tamu Undangan"}
           </p>
           <p className="mt-0.5 text-sm font-light text-white/85">Di Tempat</p>
           <button
