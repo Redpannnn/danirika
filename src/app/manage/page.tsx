@@ -1,81 +1,87 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Loader2,
   Plus,
   Pencil,
   Trash2,
+  Eye,
+  EyeOff,
+  Copy,
+  Check,
+  Upload,
+  ExternalLink,
   X,
-  Users,
-  CheckCircle2,
-  XCircle,
-  HelpCircle,
-  RefreshCw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  RadioGroup,
-  RadioGroupItem,
-} from "@/components/ui/radio-group";
 import { useToast } from "@/hooks/use-toast";
 
 /**
- * Halaman /manage — Manajemen Tamu.
+ * Halaman /manage — Kelola Tamu Undangan.
  *
- * Menampilkan semua RSVP yang masuk, dengan kemampuan:
- *  - Tambah tamu secara manual
- *  - Edit data tamu
- *  - Hapus tamu
- *  - Lihat statistik ringkas
+ * Fitur:
+ *  1. Import dari Excel/Contact (CSV, VCF, XLSX) — parse nama otomatis
+ *  2. Input nama tamu (textarea, satu nama per baris, atau "code|nama")
+ *  3. Tombol "+ TAMBAH SEMUA" untuk menambahkan semua nama sekaligus
+ *  4. Daftar tamu hasil:
+ *     - Salin: copy teks undangan WhatsApp
+ *     - View: show/hide preview teks undangan
+ *     - Edit: edit nama tamu
+ *     - Remove: hapus tamu
  */
 
-type Attendance = "hadir" | "tidak" | "ragu";
-
-type RsvpEntry = {
+type Guest = {
   id: string;
+  code: string;
   name: string;
-  attendance: Attendance;
-  guests: number;
-  message: string | null;
   createdAt: string;
 };
 
-const ATTENDANCE_META: Record<Attendance, { label: string; color: string; icon: typeof CheckCircle2 }> = {
-  hadir: { label: "Hadir", color: "text-emerald-400", icon: CheckCircle2 },
-  tidak: { label: "Tidak Hadir", color: "text-rose-400", icon: XCircle },
-  ragu: { label: "Ragu-ragu", color: "text-amber-400", icon: HelpCircle },
-};
+/** Link undangan (dengan code tamu) */
+const INVITE_BASE = "https://dani-rika-wedding.vercel.app";
+// Untuk dev lokal, ganti ke window.location.origin:
+// const INVITE_BASE = typeof window !== "undefined" ? window.location.origin : "";
 
-const EMPTY_FORM = {
-  name: "",
-  attendance: "" as Attendance | "",
-  guests: 1,
-  message: "",
-};
+/** Generate teks undangan WhatsApp untuk seorang tamu */
+function buildInviteText(name: string, code: string): string {
+  return `Assalamualaikum Wr. Wb.
+
+Dengan memohon Rahmat Dan Ridha Allah SWT, Dan tanpa mengurangi rasa hormat kami, melalui media sosial ini, kami "Dani & Rika" mengundang Bapak/Ibu/Sdr/i ${name} untuk hadir di acara pernikahan kami.
+
+Silakan buka undangan digital kami:
+${INVITE_BASE}/?to=${code}
+
+Wassalamualaikum Wr. Wb.`;
+}
 
 export default function ManagePage() {
   const { toast } = useToast();
-  const [entries, setEntries] = useState<RsvpEntry[]>([]);
+  const [guests, setGuests] = useState<Guest[]>([]);
   const [loading, setLoading] = useState(true);
-  const [showForm, setShowForm] = useState(false);
+  const [namesInput, setNamesInput] = useState("");
+  const [adding, setAdding] = useState(false);
+
+  // UI state per-guest
+  const [visibleMsg, setVisibleMsg] = useState<Set<string>>(new Set());
+  const [copiedId, setCopiedId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [form, setForm] = useState({ ...EMPTY_FORM });
-  const [saving, setSaving] = useState(false);
+  const [editName, setEditName] = useState("");
+
+  const fileRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/rsvp", { cache: "no-store" });
+      const res = await fetch("/api/guests", { cache: "no-store" });
       const data = await res.json();
       if (data.ok && Array.isArray(data.data)) {
-        setEntries(data.data);
+        setGuests(data.data);
       }
     } catch {
-      toast({ title: "Gagal memuat", variant: "destructive" });
+      toast({ title: "Gagal memuat data", variant: "destructive" });
     } finally {
       setLoading(false);
     }
@@ -85,90 +91,148 @@ export default function ManagePage() {
     load();
   }, [load]);
 
-  // --- Statistik ---
-  const stats = {
-    total: entries.length,
-    hadir: entries.filter((e) => e.attendance === "hadir").length,
-    tidak: entries.filter((e) => e.attendance === "tidak").length,
-    ragu: entries.filter((e) => e.attendance === "ragu").length,
-    guests: entries
-      .filter((e) => e.attendance === "hadir")
-      .reduce((s, e) => s + e.guests, 0),
-  };
+  // === Import file (CSV/VCF/XLSX/TXT) — dikirim ke API untuk parsing ===
+  async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
 
-  // --- Form handlers ---
-  function openAdd() {
-    setForm({ ...EMPTY_FORM });
-    setEditingId(null);
-    setShowForm(true);
-  }
-
-  function openEdit(entry: RsvpEntry) {
-    setForm({
-      name: entry.name,
-      attendance: entry.attendance,
-      guests: entry.guests,
-      message: entry.message || "",
-    });
-    setEditingId(entry.id);
-    setShowForm(true);
-  }
-
-  function closeForm() {
-    setShowForm(false);
-    setEditingId(null);
-    setForm({ ...EMPTY_FORM });
-  }
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!form.name.trim()) {
-      toast({ title: "Nama wajib diisi", variant: "destructive" });
-      return;
-    }
-    if (!form.attendance) {
-      toast({ title: "Pilih kehadiran", variant: "destructive" });
-      return;
-    }
-
-    setSaving(true);
     try {
-      const url = editingId ? `/api/rsvp/${editingId}` : "/api/rsvp";
-      const method = editingId ? "PUT" : "POST";
-      const res = await fetch(url, {
-        method,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: form.name.trim(),
-          attendance: form.attendance,
-          guests: form.guests,
-          message: form.message.trim() || undefined,
-        }),
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const res = await fetch("/api/guests/import", {
+        method: "POST",
+        body: formData,
       });
       const data = await res.json();
-      if (!res.ok || !data.ok) throw new Error(data.error || "Gagal");
-      toast({
-        title: editingId ? "Tamu diperbarui" : "Tamu ditambahkan",
+
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || "Gagal memproses file.");
+      }
+
+      const names: string[] = data.names;
+      if (names.length === 0) {
+        toast({
+          title: "Tidak ada nama ditemukan",
+          description: "Pastikan format file benar (CSV/VCF/XLSX).",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      // Isi textarea dengan nama-nama hasil import
+      setNamesInput((prev) => {
+        const existing = prev.trim();
+        return existing ? `${existing}\n${names.join("\n")}` : names.join("\n");
       });
-      closeForm();
-      load();
+      toast({
+        title: "Import berhasil",
+        description: `${names.length} nama dimuat. Klik "+ Tambah Semua".`,
+      });
     } catch (err) {
       toast({
-        title: "Gagal menyimpan",
+        title: "Gagal import file",
         description: err instanceof Error ? err.message : "",
         variant: "destructive",
       });
     } finally {
-      setSaving(false);
+      // Reset input agar bisa import file yang sama lagi
+      if (fileRef.current) fileRef.current.value = "";
     }
   }
 
-  async function handleDelete(id: string, name: string) {
-    if (!confirm(`Hapus tamu "${name}"?`)) return;
+  // === Tambah semua ===
+  async function handleAddAll() {
+    if (!namesInput.trim()) {
+      toast({ title: "Belum ada nama", variant: "destructive" });
+      return;
+    }
+    setAdding(true);
     try {
-      const res = await fetch(`/api/rsvp/${id}`, { method: "DELETE" });
+      const res = await fetch("/api/guests", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ names: namesInput }),
+      });
       const data = await res.json();
       if (!res.ok || !data.ok) throw new Error(data.error || "Gagal");
+      toast({
+        title: "Tamu ditambahkan",
+        description: `${data.count} tamu berhasil ditambahkan.`,
+      });
+      setNamesInput("");
+      load();
+    } catch (err) {
+      toast({
+        title: "Gagal menambah",
+        description: err instanceof Error ? err.message : "",
+        variant: "destructive",
+      });
+    } finally {
+      setAdding(false);
+    }
+  }
+
+  // === Salin teks undangan ===
+  async function handleCopy(g: Guest) {
+    const text = buildInviteText(g.name, g.code);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedId(g.id);
+      toast({ title: "Tersalin", description: "Teks undangan disalin." });
+      setTimeout(() => setCopiedId(null), 2000);
+    } catch {
+      // Fallback: pilih teks di textarea tersembunyi
+      toast({
+        title: "Gagal menyalin",
+        description: "Salin manual dari preview.",
+        variant: "destructive",
+      });
+    }
+  }
+
+  // === Toggle view message ===
+  function toggleView(id: string) {
+    setVisibleMsg((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  // === Edit ===
+  function startEdit(g: Guest) {
+    setEditingId(g.id);
+    setEditName(g.name);
+  }
+
+  async function saveEdit(id: string) {
+    if (!editName.trim()) {
+      toast({ title: "Nama tidak boleh kosong", variant: "destructive" });
+      return;
+    }
+    try {
+      const res = await fetch(`/api/guests/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: editName.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || "Gagal");
+      toast({ title: "Tamu diperbarui" });
+      setEditingId(null);
+      load();
+    } catch {
+      toast({ title: "Gagal mengedit", variant: "destructive" });
+    }
+  }
+
+  // === Remove ===
+  async function handleRemove(g: Guest) {
+    if (!confirm(`Hapus "${g.name}"?`)) return;
+    try {
+      await fetch(`/api/guests/${g.id}`, { method: "DELETE" });
       toast({ title: "Tamu dihapus" });
       load();
     } catch {
@@ -176,289 +240,261 @@ export default function ManagePage() {
     }
   }
 
+  // === Hapus semua ===
+  async function handleClearAll() {
+    if (!confirm("Hapus SEMUA tamu? Tindakan ini tidak bisa dibatalkan.")) return;
+    try {
+      await fetch("/api/guests/clear", { method: "DELETE" });
+      toast({ title: "Semua tamu dihapus" });
+      load();
+    } catch {
+      toast({ title: "Gagal menghapus semua", variant: "destructive" });
+    }
+  }
+
   return (
     <main className="min-h-dvh bg-[#0A183F] text-white">
-      <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
+      <div className="mx-auto max-w-2xl px-4 py-8 sm:px-6">
         {/* Header */}
-        <header className="mb-8 flex items-center justify-between gap-4">
-          <div>
-            <p className="text-[11px] font-medium tracking-[0.32em] uppercase text-white/70">
-              Admin
-            </p>
-            <h1 className="font-script text-4xl text-white sm:text-5xl">
-              Manajemen Tamu
-            </h1>
-            <p className="mt-1 text-xs font-light text-white/60">
-              Dani &amp; Rika Wedding
-            </p>
-          </div>
-          <div className="flex gap-2">
-            <Button
-              onClick={load}
-              variant="outline"
-              size="icon"
-              className="border-white/20 bg-white/5 text-white hover:bg-white/10"
-              aria-label="Refresh"
-            >
-              <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-            </Button>
-            <Button
-              onClick={openAdd}
-              className="bg-[#2B51B0] text-white hover:bg-[#1E3B8C]"
-            >
-              <Plus className="mr-1.5 h-4 w-4" />
-              Tambah
-            </Button>
-          </div>
+        <header className="mb-8 text-center">
+          <p className="text-[11px] font-medium tracking-[0.32em] uppercase text-white/60">
+            Admin
+          </p>
+          <h1 className="font-script text-4xl text-white sm:text-5xl">
+            Kelola Tamu Undangan
+          </h1>
+          <p className="mt-1 text-xs font-light text-white/50">
+            Dani &amp; Rika Wedding
+          </p>
+          <a
+            href="/"
+            className="mt-3 inline-flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.2em] text-white/60 transition-colors hover:text-white"
+          >
+            <ExternalLink className="h-3 w-3" />
+            Lihat Undangan
+          </a>
         </header>
 
-        {/* Statistik */}
-        <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <StatCard icon={Users} label="Total RSVP" value={stats.total} />
-          <StatCard icon={CheckCircle2} label="Hadir" value={stats.hadir} color="text-emerald-400" />
-          <StatCard icon={XCircle} label="Tidak Hadir" value={stats.tidak} color="text-rose-400" />
-          <StatCard icon={Users} label="Jumlah Tamu" value={stats.guests} color="text-sky-400" />
-        </div>
+        {/* Card: Tambah Tamu */}
+        <div className="mb-6 rounded-2xl border border-white/15 bg-white/5 p-5 sm:p-6">
+          <h2 className="mb-4 text-sm font-bold uppercase tracking-[0.18em] text-white/80">
+            Tambah Tamu
+          </h2>
 
-        {/* Daftar tamu */}
-        {loading ? (
-          <div className="flex items-center justify-center py-20">
-            <Loader2 className="h-6 w-6 animate-spin text-white/60" />
-          </div>
-        ) : entries.length === 0 ? (
-          <div className="rounded-2xl border border-white/10 bg-white/5 py-16 text-center">
-            <Users className="mx-auto h-10 w-10 text-white/30" />
-            <p className="mt-3 text-sm text-white/60">
-              Belum ada tamu. Klik &ldquo;Tambah&rdquo; untuk menambahkan.
-            </p>
-          </div>
-        ) : (
-          <div className="flex flex-col gap-3">
-            {entries.map((entry) => {
-              const meta = ATTENDANCE_META[entry.attendance];
-              const Icon = meta.icon;
-              return (
-                <article
-                  key={entry.id}
-                  className="rounded-xl border border-white/10 bg-white/5 p-4 transition-colors hover:bg-white/10"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <h3 className="font-script text-2xl text-white">
-                          {entry.name}
-                        </h3>
-                        <span className={`flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide ${meta.color}`}>
-                          <Icon className="h-3 w-3" />
-                          {meta.label}
-                        </span>
-                      </div>
-                      {entry.message ? (
-                        <p className="mt-1.5 text-xs font-light leading-relaxed text-white/70">
-                          {entry.message}
-                        </p>
-                      ) : null}
-                      <div className="mt-2 flex items-center gap-3 text-[10px] text-white/50">
-                        <span>
-                          {new Date(entry.createdAt).toLocaleDateString("id-ID", {
-                            day: "numeric",
-                            month: "short",
-                            year: "numeric",
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          })}
-                        </span>
-                        {entry.attendance === "hadir" ? (
-                          <span>{entry.guests} tamu</span>
-                        ) : null}
-                      </div>
-                    </div>
-                    <div className="flex shrink-0 gap-1.5">
-                      <button
-                        onClick={() => openEdit(entry)}
-                        aria-label={`Edit ${entry.name}`}
-                        className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/15 bg-white/5 text-white/70 transition-colors hover:bg-white/15 hover:text-white"
-                      >
-                        <Pencil className="h-3.5 w-3.5" />
-                      </button>
-                      <button
-                        onClick={() => handleDelete(entry.id, entry.name)}
-                        aria-label={`Hapus ${entry.name}`}
-                        className="flex h-8 w-8 items-center justify-center rounded-lg border border-rose-500/20 bg-rose-500/10 text-rose-400 transition-colors hover:bg-rose-500/20"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-                  </div>
-                </article>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
-      {/* Modal form tambah/edit */}
-      {showForm ? (
-        <div
-          className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 p-0 backdrop-blur-sm sm:items-center sm:p-4"
-          onClick={closeForm}
-        >
-          <div
-            className="w-full max-w-md rounded-t-2xl border border-white/15 bg-[#132B66] p-5 sm:rounded-2xl"
-            onClick={(e) => e.stopPropagation()}
+          {/* Import dropzone */}
+          <button
+            type="button"
+            onClick={() => fileRef.current?.click()}
+            className="mb-4 flex w-full flex-col items-center gap-2 rounded-xl border-2 border-dashed border-white/25 bg-white/5 px-4 py-6 text-center transition-colors hover:border-white/40 hover:bg-white/10"
           >
-            <div className="mb-4 flex items-center justify-between">
-              <h2 className="font-script text-2xl text-white">
-                {editingId ? "Edit Tamu" : "Tambah Tamu"}
-              </h2>
-              <button
-                onClick={closeForm}
-                aria-label="Tutup"
-                className="flex h-8 w-8 items-center justify-center rounded-lg text-white/60 hover:bg-white/10"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
+            <Upload className="h-5 w-5 text-white/50" />
+            <p className="text-xs font-medium text-white/80">
+              Klik untuk Import Kontak / Excel
+            </p>
+            <p className="text-[10px] font-light text-white/40">
+              Format CSV, VCF (vCard), TXT
+            </p>
+          </button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".csv,.vcf,.txt"
+            onChange={handleFile}
+            className="hidden"
+          />
 
-            <form onSubmit={handleSubmit} className="space-y-4">
-              {/* Nama */}
-              <div className="space-y-1.5">
-                <Label className="text-[10px] font-semibold uppercase tracking-[0.18em] text-white/70">
-                  Nama
-                </Label>
-                <Input
-                  value={form.name}
-                  onChange={(e) => setForm({ ...form, name: e.target.value })}
-                  placeholder="Nama tamu"
-                  maxLength={80}
-                  className="border-white/20 bg-white/5 text-white placeholder:text-white/40 focus-visible:ring-white/30"
-                />
-              </div>
+          {/* Instruksi */}
+          <p className="mb-2 text-[11px] font-light leading-relaxed text-white/60">
+            Ketik / paste nama tamu — satu nama per baris. Kode otomatis
+            dibuat dari nama. Atau pakai format{" "}
+            <code className="rounded bg-white/10 px-1.5 py-0.5 font-mono text-[10px] text-white/80">
+              code|nama
+            </code>{" "}
+            untuk code custom.
+          </p>
 
-              {/* Kehadiran */}
-              <div className="space-y-1.5">
-                <Label className="text-[10px] font-semibold uppercase tracking-[0.18em] text-white/70">
-                  Kehadiran
-                </Label>
-                <RadioGroup
-                  value={form.attendance}
-                  onValueChange={(v) => setForm({ ...form, attendance: v as Attendance })}
-                  className="grid grid-cols-1 gap-2"
-                >
-                  {(["hadir", "tidak", "ragu"] as Attendance[]).map((a) => (
-                    <label
-                      key={a}
-                      className="flex cursor-pointer items-center gap-3 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-white transition-colors hover:border-white/30 has-[:checked]:border-[#2B51B0] has-[:checked]:bg-white/10"
-                    >
-                      <RadioGroupItem value={a} className="border-white/40 text-[#2B51B0]" />
-                      {ATTENDANCE_META[a].label}
-                    </label>
-                  ))}
-                </RadioGroup>
-              </div>
+          {/* Textarea nama */}
+          <Textarea
+            value={namesInput}
+            onChange={(e) => setNamesInput(e.target.value)}
+            placeholder={"Contoh:\nBudi Santoso\nSiti Aminah\nkeluarga-besar|Keluarga Besar"}
+            rows={5}
+            className="resize-y border-white/15 bg-white/5 text-sm text-white placeholder:text-white/30 focus-visible:ring-white/30"
+          />
 
-              {/* Jumlah tamu */}
-              <div className="space-y-1.5">
-                <Label className="text-[10px] font-semibold uppercase tracking-[0.18em] text-white/70">
-                  Jumlah Tamu
-                </Label>
-                <div className="flex items-center gap-2.5">
-                  <button
-                    type="button"
-                    onClick={() => setForm({ ...form, guests: Math.max(1, form.guests - 1) })}
-                    className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/20 bg-white/5 text-white hover:bg-white/10"
-                  >
-                    &minus;
-                  </button>
-                  <Input
-                    type="number"
-                    min={1}
-                    max={10}
-                    value={form.guests}
-                    onChange={(e) => {
-                      const n = Number(e.target.value);
-                      if (Number.isFinite(n))
-                        setForm({ ...form, guests: Math.min(10, Math.max(1, Math.round(n))) });
-                    }}
-                    className="w-16 text-center border-white/20 bg-white/5 text-white"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setForm({ ...form, guests: Math.min(10, form.guests + 1) })}
-                    className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/20 bg-white/5 text-white hover:bg-white/10"
-                  >
-                    +
-                  </button>
-                </div>
-              </div>
-
-              {/* Pesan */}
-              <div className="space-y-1.5">
-                <Label className="text-[10px] font-semibold uppercase tracking-[0.18em] text-white/70">
-                  Ucapan / Catatan
-                </Label>
-                <Textarea
-                  value={form.message}
-                  onChange={(e) => setForm({ ...form, message: e.target.value })}
-                  placeholder="(opsional)"
-                  rows={2}
-                  maxLength={1000}
-                  className="resize-none border-white/20 bg-white/5 text-white placeholder:text-white/40 focus-visible:ring-white/30"
-                />
-              </div>
-
-              {/* Tombol */}
-              <div className="flex gap-2 pt-2">
-                <Button
-                  type="button"
-                  onClick={closeForm}
-                  variant="outline"
-                  className="flex-1 border-white/20 bg-transparent text-white hover:bg-white/10"
-                >
-                  Batal
-                </Button>
-                <Button
-                  type="submit"
-                  disabled={saving}
-                  className="flex-1 bg-[#2B51B0] text-white hover:bg-[#1E3B8C]"
-                >
-                  {saving ? (
-                    <>
-                      <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-                      Menyimpan...
-                    </>
-                  ) : editingId ? (
-                    "Simpan"
-                  ) : (
-                    "Tambah"
-                  )}
-                </Button>
-              </div>
-            </form>
+          {/* Bottom row */}
+          <div className="mt-4 flex items-center justify-between">
+            <p className="text-[10px] font-light text-white/40">
+              {namesInput.trim()
+                ? `${namesInput.trim().split("\n").filter(Boolean).length} nama siap ditambah`
+                : "Belum ada nama."}
+            </p>
+            <Button
+              onClick={handleAddAll}
+              disabled={adding || !namesInput.trim()}
+              className="bg-[#2B51B0] text-white hover:bg-[#1E3B8C]"
+            >
+              {adding ? (
+                <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+              ) : (
+                <Plus className="mr-1.5 h-4 w-4" />
+              )}
+              Tambah Semua
+            </Button>
           </div>
         </div>
-      ) : null}
-    </main>
-  );
-}
 
-/** Kartu statistik kecil */
-function StatCard({
-  icon: Icon,
-  label,
-  value,
-  color = "text-white",
-}: {
-  icon: typeof Users;
-  label: string;
-  value: number;
-  color?: string;
-}) {
-  return (
-    <div className="rounded-xl border border-white/10 bg-white/5 px-3 py-3">
-      <Icon className={`h-4 w-4 ${color}`} />
-      <p className="mt-1.5 text-2xl font-bold text-white">{value}</p>
-      <p className="text-[10px] uppercase tracking-wide text-white/50">{label}</p>
-    </div>
+        {/* Card: Daftar Tamu */}
+        <div className="rounded-2xl border border-white/15 bg-white/5 p-5 sm:p-6">
+          {/* Header */}
+          <div className="mb-4 flex items-center justify-between">
+            <h2 className="text-sm font-bold uppercase tracking-[0.18em] text-white/80">
+              Daftar Tamu
+            </h2>
+            <div className="flex items-center gap-3">
+              <span className="text-[10px] font-medium uppercase tracking-wide text-white/40">
+                {guests.length} Tamu
+              </span>
+              {guests.length > 0 ? (
+                <button
+                  onClick={handleClearAll}
+                  className="flex items-center gap-1 rounded-full border border-rose-500/30 bg-rose-500/10 px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-rose-400 transition-colors hover:bg-rose-500/20"
+                >
+                  <Trash2 className="h-3 w-3" />
+                  Hapus Semua
+                </button>
+              ) : null}
+            </div>
+          </div>
+
+          {/* List */}
+          {loading ? (
+            <div className="flex justify-center py-12">
+              <Loader2 className="h-6 w-6 animate-spin text-white/50" />
+            </div>
+          ) : guests.length === 0 ? (
+            <p className="py-10 text-center text-xs font-light text-white/40">
+              Belum ada tamu. Tambahkan di atas.
+            </p>
+          ) : (
+            <div className="flex flex-col gap-3">
+              {guests.map((g, idx) => (
+                <article
+                  key={g.id}
+                  className="rounded-xl border border-white/10 bg-white/5 p-4"
+                >
+                  {/* Top row */}
+                  <div className="flex items-start gap-3">
+                    {/* Avatar number */}
+                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/10 text-xs font-semibold text-white/70">
+                      {idx + 1}
+                    </span>
+
+                    {/* Name + code (or edit input) */}
+                    <div className="min-w-0 flex-1">
+                      {editingId === g.id ? (
+                        <div className="flex items-center gap-2">
+                          <Input
+                            value={editName}
+                            onChange={(e) => setEditName(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") saveEdit(g.id);
+                              if (e.key === "Escape") setEditingId(null);
+                            }}
+                            className="h-8 border-white/20 bg-white/5 text-sm text-white"
+                            autoFocus
+                          />
+                          <button
+                            onClick={() => saveEdit(g.id)}
+                            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30"
+                            aria-label="Simpan"
+                          >
+                            <Check className="h-4 w-4" />
+                          </button>
+                          <button
+                            onClick={() => setEditingId(null)}
+                            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/10 text-white/60 hover:bg-white/20"
+                            aria-label="Batal"
+                          >
+                            <X className="h-4 w-4" />
+                          </button>
+                        </div>
+                      ) : (
+                        <>
+                          <p className="font-script text-xl leading-tight text-white">
+                            {g.name}
+                          </p>
+                          <p className="mt-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-white/40">
+                            {g.code}
+                          </p>
+                        </>
+                      )}
+                    </div>
+
+                    {/* Action buttons (hidden during edit) */}
+                    {editingId !== g.id ? (
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        {/* Salin */}
+                        <button
+                          onClick={() => handleCopy(g)}
+                          className="flex items-center gap-1 rounded-full bg-[#2B51B0] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-white transition-colors hover:bg-[#1E3B8C]"
+                        >
+                          {copiedId === g.id ? (
+                            <>
+                              <Check className="h-3 w-3" /> Salin
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="h-3 w-3" /> Salin
+                            </>
+                          )}
+                        </button>
+                        {/* View toggle */}
+                        <button
+                          onClick={() => toggleView(g.id)}
+                          aria-label={visibleMsg.has(g.id) ? "Sembunyikan teks" : "Lihat teks"}
+                          className="flex h-8 w-8 items-center justify-center rounded-full border border-white/20 bg-white/5 text-white/60 transition-colors hover:bg-white/15 hover:text-white"
+                        >
+                          {visibleMsg.has(g.id) ? (
+                            <EyeOff className="h-3.5 w-3.5" />
+                          ) : (
+                            <Eye className="h-3.5 w-3.5" />
+                          )}
+                        </button>
+                        {/* Edit */}
+                        <button
+                          onClick={() => startEdit(g)}
+                          aria-label={`Edit ${g.name}`}
+                          className="flex h-8 w-8 items-center justify-center rounded-full border border-white/20 bg-white/5 text-white/60 transition-colors hover:bg-white/15 hover:text-white"
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </button>
+                        {/* Remove */}
+                        <button
+                          onClick={() => handleRemove(g)}
+                          aria-label={`Hapus ${g.name}`}
+                          className="flex h-8 w-8 items-center justify-center rounded-full border border-rose-500/25 bg-rose-500/10 text-rose-400 transition-colors hover:bg-rose-500/20"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+
+                  {/* Message preview (toggle) */}
+                  {visibleMsg.has(g.id) ? (
+                    <div className="mt-3 max-h-48 overflow-y-auto rounded-lg border border-white/10 bg-black/20 p-3 text-[11px] font-light leading-relaxed text-white/70 [scrollbar-width:thin]">
+                      <pre className="whitespace-pre-wrap font-sans">
+                        {buildInviteText(g.name, g.code)}
+                      </pre>
+                    </div>
+                  ) : null}
+                </article>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </main>
   );
 }

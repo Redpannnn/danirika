@@ -121,9 +121,15 @@ export function RsvpSection() {
           message: message.trim() || undefined,
         }),
       });
-      const data = await res.json();
+      let data: { ok?: boolean; error?: string } = {};
+      try {
+        data = await res.json();
+      } catch {
+        // Respons bukan JSON (mis. server error 500)
+        throw new Error("Server tidak merespons. Coba lagi nanti.");
+      }
       if (!res.ok || !data.ok) {
-        throw new Error(data.error || "Gagal mengirim.");
+        throw new Error(data.error || "Gagal mengirim. Coba lagi nanti.");
       }
       setDone(true);
       // Segarkan daftar ucapan supaya pesan baru langsung muncul

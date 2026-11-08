@@ -39,3 +39,10 @@ model RSVP {
   message   String?
   createdAt DateTime @default(now())
 }
+
+model Guest {
+  id        String   @id @default(cuid())
+  code      String   @unique // kode unik undangan, mis. "7770-MAMIKU"
+  name      String
+  createdAt DateTime @default(now())
+}
