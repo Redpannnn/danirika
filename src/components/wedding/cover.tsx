@@ -108,7 +108,7 @@ export function Cover({ mode = "cover", onOpen }: CoverProps) {
           Dani &amp; Rika
         </h1>
         <p className="anim-fade-down mt-4 text-[11px] font-light tracking-[0.32em] uppercase text-white/85 sm:text-sm [animation-delay:400ms]">
-          Sabtu, 09 Januari 2027
+          Minggu, 10 Januari 2026
         </p>
       </header>
 
