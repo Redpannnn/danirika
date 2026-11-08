@@ -25,6 +25,9 @@ function createPrismaClient(): PrismaClient {
   const authToken = process.env.TURSO_AUTH_TOKEN;
 
   // Produksi: Turso (libsql:// atau http://)
+  // PENTING: saat pakai Driver Adapter, JANGAN kasih `datasources` —
+  // adapter sudah handle koneksi, dan kombinasi keduanya bikin error
+  // "Custom datasource configuration is not compatible with Driver Adapters".
   if (
     dbUrl.startsWith("libsql:") ||
     dbUrl.startsWith("http:") ||
@@ -35,12 +38,7 @@ function createPrismaClient(): PrismaClient {
       authToken: authToken || undefined,
     });
     const adapter = new PrismaLibSql(libsql);
-    // adapter handle koneksi; datasources dibuat konsisten biar Prisma
-    // tidak mencoba membaca URL dari schema (yang bisa "undefined")
-    return new PrismaClient({
-      adapter,
-      datasources: { db: { url: dbUrl } },
-    });
+    return new PrismaClient({ adapter });
   }
 
   // Lokal: SQLite file
@@ -51,20 +49,14 @@ function createPrismaClient(): PrismaClient {
     });
   }
 
-  // DATABASE_URL tidak di-set — fallback ke SQLite lokal (dev) atau
-  // throw error jelas di produksi.
+  // DATABASE_URL tidak di-set — fallback dev ke SQLite lokal.
+  // Di produksi tanpa env var, query akan gagal dengan error jelas
+  // (lihat /api/debug-db untuk diagnose).
   const fallbackUrl = "file:./db/custom.db";
-  if (process.env.NODE_ENV === "production") {
-    // Di produksi, tetap bikin client dengan URL dummy biar tidak crash
-    // saat import module. Query akan gagal dengan error yang jelas.
-    console.error(
-      "[DB] DATABASE_URL belum di-set! Buka /api/debug-db untuk panduan."
-    );
-    return new PrismaClient({
-      datasources: { db: { url: "file:/tmp/dummy.db" } },
-    });
-  }
-
+  console.warn(
+    "[DB] DATABASE_URL tidak terdeteksi sebagai Turso/file. " +
+      "Buka /api/debug-db untuk panduan setup."
+  );
   return new PrismaClient({
     log: ["query"],
     datasources: { db: { url: fallbackUrl } },
