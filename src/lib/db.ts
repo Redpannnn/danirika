@@ -37,7 +37,22 @@ function createPrismaClient(): PrismaClient {
   }
 
   // Lokal: SQLite file
-  return new PrismaClient({ log: ["query"] });
+  if (dbUrl.startsWith("file:")) {
+    return new PrismaClient({ log: ["query"] });
+  }
+
+  // DATABASE_URL tidak di-set atau format tidak dikenal
+  if (process.env.NODE_ENV === "production") {
+    throw new Error(
+      "DATABASE_URL belum di-set atau format salah. Set DATABASE_URL=libsql://xxx.turso.io dan TURSO_AUTH_TOKEN di Vercel Dashboard."
+    );
+  }
+
+  // Fallback dev: pakai SQLite file default
+  return new PrismaClient({
+    log: ["query"],
+    datasources: { db: { url: "file:./db/custom.db" } },
+  });
 }
 
 export const db = globalForPrisma.prisma ?? createPrismaClient();
