@@ -13,7 +13,8 @@ import { PrismaLibSql } from "@prisma/adapter-libsql";
  *     DATABASE_URL     = libsql://xxx.turso.io
  *     TURSO_AUTH_TOKEN = eyJxxx
  *
- * Lihat .env.example untuk panduan lengkap.
+ * Debug: buka /api/debug-db untuk cek apakah env vars terbaca.
+ * Setup: buka /api/setup-db untuk bikin tabel otomatis.
  */
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined;
@@ -21,6 +22,7 @@ const globalForPrisma = globalThis as unknown as {
 
 function createPrismaClient(): PrismaClient {
   const dbUrl = process.env.DATABASE_URL || "";
+  const authToken = process.env.TURSO_AUTH_TOKEN;
 
   // Produksi: Turso (libsql:// atau http://)
   if (
@@ -30,28 +32,42 @@ function createPrismaClient(): PrismaClient {
   ) {
     const libsql = createLibsqlClient({
       url: dbUrl,
-      authToken: process.env.TURSO_AUTH_TOKEN,
+      authToken: authToken || undefined,
     });
     const adapter = new PrismaLibSql(libsql);
-    return new PrismaClient({ adapter });
+    // adapter handle koneksi; datasources dibuat konsisten biar Prisma
+    // tidak mencoba membaca URL dari schema (yang bisa "undefined")
+    return new PrismaClient({
+      adapter,
+      datasources: { db: { url: dbUrl } },
+    });
   }
 
   // Lokal: SQLite file
   if (dbUrl.startsWith("file:")) {
-    return new PrismaClient({ log: ["query"] });
+    return new PrismaClient({
+      log: ["query"],
+      datasources: { db: { url: dbUrl } },
+    });
   }
 
-  // DATABASE_URL tidak di-set atau format tidak dikenal
+  // DATABASE_URL tidak di-set — fallback ke SQLite lokal (dev) atau
+  // throw error jelas di produksi.
+  const fallbackUrl = "file:./db/custom.db";
   if (process.env.NODE_ENV === "production") {
-    throw new Error(
-      "DATABASE_URL belum di-set atau format salah. Set DATABASE_URL=libsql://xxx.turso.io dan TURSO_AUTH_TOKEN di Vercel Dashboard."
+    // Di produksi, tetap bikin client dengan URL dummy biar tidak crash
+    // saat import module. Query akan gagal dengan error yang jelas.
+    console.error(
+      "[DB] DATABASE_URL belum di-set! Buka /api/debug-db untuk panduan."
     );
+    return new PrismaClient({
+      datasources: { db: { url: "file:/tmp/dummy.db" } },
+    });
   }
 
-  // Fallback dev: pakai SQLite file default
   return new PrismaClient({
     log: ["query"],
-    datasources: { db: { url: "file:./db/custom.db" } },
+    datasources: { db: { url: fallbackUrl } },
   });
 }
 
