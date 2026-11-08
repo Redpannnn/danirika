@@ -73,10 +73,9 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true, count: created.length });
   } catch (error) {
     console.error("Guest create error:", error);
-    return NextResponse.json(
-      { ok: false, error: "Gagal menambah tamu." },
-      { status: 500 }
-    );
+    const msg =
+      error instanceof Error ? error.message : "Gagal menambah tamu.";
+    return NextResponse.json({ ok: false, error: msg }, { status: 500 });
   }
 }
 
@@ -89,9 +88,8 @@ export async function GET() {
     return NextResponse.json({ ok: true, data: list });
   } catch (error) {
     console.error("Guest list error:", error);
-    return NextResponse.json(
-      { ok: false, error: "Gagal memuat data." },
-      { status: 500 }
-    );
+    const msg =
+      error instanceof Error ? error.message : "Gagal memuat data.";
+    return NextResponse.json({ ok: false, error: msg }, { status: 500 });
   }
 }

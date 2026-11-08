@@ -39,10 +39,9 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true, id: rsvp.id });
   } catch (error) {
     console.error("RSVP error:", error);
-    return NextResponse.json(
-      { ok: false, error: "Terjadi kesalahan, silakan coba lagi." },
-      { status: 500 }
-    );
+    const msg =
+      error instanceof Error ? error.message : "Terjadi kesalahan, silakan coba lagi.";
+    return NextResponse.json({ ok: false, error: msg }, { status: 500 });
   }
 }
 
