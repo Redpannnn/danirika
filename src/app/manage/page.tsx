@@ -41,7 +41,7 @@ type Guest = {
 };
 
 /** Link undangan (dengan code tamu) */
-const INVITE_BASE = "https://dani-rika-wedding.vercel.app";
+const INVITE_BASE = typeof window !== "undefined" ? window.location.origin : "https://danirika.memoraa-invitation.my.id";
 // Untuk dev lokal, ganti ke window.location.origin:
 // const INVITE_BASE = typeof window !== "undefined" ? window.location.origin : "";
 
