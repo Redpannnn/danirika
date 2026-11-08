@@ -157,7 +157,7 @@ export function CoupleSection() {
             photoAlt="Foto mempelai wanita, Rika Mariska MY"
             name="Rika Mariska MY"
             childLabel="Putri dari"
-            parentsLine="Bapak Muhammad Yamir (Alm) & Ibu HasnaHaboy"
+            parentsLine="Bapak Muhammad Yamir (Alm) & Ibu Hasnah"
           />
         </div>
       </div>
